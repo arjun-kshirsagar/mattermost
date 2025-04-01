@@ -42,7 +42,9 @@ func MakeWorker(jobServer *jobs.JobServer, license *model.License, screenTimeSto
 		}
 
 		if now.After(time.UnixMilli(screenTime).Add(waitForScreeningDuration)) {
-			screenTimeStore.PermanentDeleteByName(model.SystemHostedPurchaseNeedsScreening)
+			if _, err := screenTimeStore.PermanentDeleteByName(model.SystemHostedPurchaseNeedsScreening); err != nil {
+				logger.Warn("Failed to delete screening time", mlog.Err(err))
+			}
 		}
 		return nil
 	}
