@@ -18,6 +18,7 @@ import (
 	"github.com/mattermost/mattermost/server/v8/channels/jobs"
 	"github.com/mattermost/mattermost/server/v8/channels/store"
 	"github.com/mattermost/mattermost/server/v8/config"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -334,8 +335,8 @@ func (th *TestHelper) checkJobStatus(t *testing.T, jobId string, status string) 
 
 	require.Eventuallyf(t, func() bool {
 		// it's ok if there's an error, it might take awhile for the job to finish.
-		job, err := th.Server.Jobs.GetJob(th.Context, jobId)
-		require.NoError(t, err)
+		job, appErr := th.Server.Jobs.GetJob(th.Context, jobId)
+		assert.Nil(th.T, appErr)
 		if jobId == job.Id {
 			return job.Status == status
 		}
