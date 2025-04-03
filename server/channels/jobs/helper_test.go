@@ -22,6 +22,8 @@ import (
 )
 
 type TestHelper struct {
+	T testing.TB
+
 	App        *app.App
 	Context    *request.Context
 	Server     *app.Server
@@ -35,9 +37,7 @@ type TestHelper struct {
 	IncludeCacheLayer bool
 	ConfigStore       *config.Store
 
-	tempWorkspace             string
 	oldWatcherPollingInterval int
-	T                         testing.TB
 }
 
 func setupTestHelper(t testing.TB, dbStore store.Store, enterprise bool, includeCacheLayer bool,
@@ -77,10 +77,10 @@ func setupTestHelper(t testing.TB, dbStore store.Store, enterprise bool, include
 	require.NoError(t, err)
 	logCfg, err := config.MloggerConfigFromLoggerConfig(&memoryConfig.LogSettings, nil, config.GetLogFileLocation)
 	require.NoError(t, err)
-	errCfg := testLogger.ConfigureTargets(logCfg, nil)
-	require.NoError(t, errCfg, "failed to configure test logger")
-	errW := mlog.AddWriterTarget(testLogger, buffer, true, mlog.StdAll...)
-	require.NoError(t, errW, "failed to add writer target to test logger")
+	err = testLogger.ConfigureTargets(logCfg, nil)
+	require.NoError(t, err, "failed to configure test logger")
+	err = mlog.AddWriterTarget(testLogger, buffer, true, mlog.StdAll...)
+	require.NoError(t, err, "failed to add writer target to test logger")
 	// lock logger config so server init cannot override it during testing.
 	testLogger.LockConfiguration()
 	options = append(options, app.SetLogger(testLogger))
@@ -101,8 +101,8 @@ func setupTestHelper(t testing.TB, dbStore store.Store, enterprise bool, include
 
 	prevListenAddress := *th.App.Config().ServiceSettings.ListenAddress
 	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.ListenAddress = "localhost:0" })
-	serverErr := th.Server.Start()
-	require.NoError(t, serverErr)
+	err = th.Server.Start()
+	require.NoError(t, err)
 
 	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.ListenAddress = prevListenAddress })
 
@@ -143,9 +143,8 @@ var userCache struct {
 func (th *TestHelper) InitBasic() *TestHelper {
 	// create users once and cache them because password hashing is slow
 	initBasicOnce.Do(func() {
-		var appErr *model.AppError
 		th.SystemAdminUser = th.CreateUser()
-		_, appErr = th.App.UpdateUserRoles(th.Context, th.SystemAdminUser.Id, model.SystemUserRoleId+" "+model.SystemAdminRoleId, false)
+		_, appErr := th.App.UpdateUserRoles(th.Context, th.SystemAdminUser.Id, model.SystemUserRoleId+" "+model.SystemAdminRoleId, false)
 		require.Nil(th.T, appErr)
 		th.SystemAdminUser, appErr = th.App.GetUser(th.SystemAdminUser.Id)
 		require.Nil(th.T, appErr)
@@ -167,8 +166,8 @@ func (th *TestHelper) InitBasic() *TestHelper {
 	th.BasicUser2 = userCache.BasicUser2.DeepCopy()
 
 	users := []*model.User{th.SystemAdminUser, th.BasicUser, th.BasicUser2}
-	insertErr := mainHelper.GetSQLStore().User().InsertUsers(users)
-	require.Nil(th.T, insertErr)
+	err := mainHelper.GetSQLStore().User().InsertUsers(users)
+	require.NoError(th.T, err)
 
 	th.BasicTeam = th.CreateTeam()
 	return th
@@ -234,14 +233,10 @@ func (th *TestHelper) ShutdownApp() {
 func (th *TestHelper) TearDown() {
 	if th.IncludeCacheLayer {
 		// Clean all the caches
-		invalidateErr := th.App.Srv().InvalidateAllCaches()
-		require.Nil(th.T, invalidateErr)
+		appErr := th.App.Srv().InvalidateAllCaches()
+		require.Nil(th.T, appErr)
 	}
 	th.ShutdownApp()
-	if th.tempWorkspace != "" {
-		err := os.RemoveAll(th.tempWorkspace)
-		require.Nil(th.T, err)
-	}
 
 	if th.oldWatcherPollingInterval != 0 {
 		jobs.DefaultWatcherPollingInterval = th.oldWatcherPollingInterval
@@ -340,7 +335,7 @@ func (th *TestHelper) checkJobStatus(t *testing.T, jobId string, status string) 
 	require.Eventuallyf(t, func() bool {
 		// it's ok if there's an error, it might take awhile for the job to finish.
 		job, err := th.Server.Jobs.GetJob(th.Context, jobId)
-		require.Nil(t, err)
+		require.NoError(t, err)
 		if jobId == job.Id {
 			return job.Status == status
 		}
