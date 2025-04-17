@@ -842,6 +842,15 @@ func stripPort(hostport string) string {
 }
 
 func (s *Server) Start() error {
+
+	dsn:= "googledrive://"
+
+	store, err := config.NewStoreFromDSN(dsn, false, nil, false)
+	if err != nil {
+		return errors.Wrap(err, "failed to create config store")
+	}
+	s.platform.SetConfigStore(store)
+
 	// Start channels.
 	// This needs to happen before because channels is dependent on the HTTP server.
 	if err := s.Channels().Start(); err != nil {
@@ -871,7 +880,7 @@ func (s *Server) Start() error {
 		}
 	}
 
-	err := s.FileBackend().TestConnection()
+	err = s.FileBackend().TestConnection()
 	if err != nil {
 		if _, ok := err.(*filestore.S3FileBackendNoBucketError); ok {
 			err = s.FileBackend().(*filestore.S3FileBackend).MakeBucket()

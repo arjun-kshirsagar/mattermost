@@ -6,6 +6,7 @@ package config
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -90,17 +91,20 @@ func NewStoreFromDSN(dsn string, readOnly bool, customDefaults *model.Config, cr
 	var backingStore BackingStore
 	if IsDatabaseDSN(dsn) {
 		backingStore, err = NewDatabaseStore(dsn)
+	} else if strings.HasPrefix(dsn, "googledrive://") {
+
+		fileId := "1VFloJiGYd2jKrZKyXXCeUWBs0y82g9vK"
+		credentialsPath := "//home//jenu//Desktop//mattermost//mattermost.json"
+		backingStore, err = NewGoogleDriveStore(dsn, fileId, credentialsPath)
 	} else {
 		backingStore, err = NewFileStore(dsn, createFileIfNotExist)
 	}
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to create backing store")
 	}
-
 	store, err := NewStoreFromBacking(backingStore, customDefaults, readOnly)
 	if err != nil {
-		backingStore.Close()
-		return nil, errors.Wrap(err, "failed to create store")
+		return nil, errors.Wrap(err, "failed to create config store")
 	}
 
 	return store, nil

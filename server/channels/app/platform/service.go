@@ -609,3 +609,7 @@ func (ps *PlatformService) DatabaseTypeAndSchemaVersion() (string, string, error
 
 	return model.SafeDereference(ps.Config().SqlSettings.DriverName), strconv.Itoa(schemaVersion), nil
 }
+
+func (ps *PlatformService) SetConfigStore(store *config.Store) {
+	ps.configStore = store
+}
