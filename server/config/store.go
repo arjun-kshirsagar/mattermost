@@ -93,7 +93,7 @@ func NewStoreFromDSN(dsn string, readOnly bool, customDefaults *model.Config, cr
 		backingStore, err = NewDatabaseStore(dsn)
 	} else if strings.HasPrefix(dsn, "googledrive://") {
 
-		fileId := "1VFloJiGYd2jKrZKyXXCeUWBs0y82g9vK"
+		fileId := "1RWrQmDVWHzEejeBXHuIXO-HRD6y6g6Cd"
 		credentialsPath := "//home//jenu//Desktop//mattermost//mattermost.json"
 		backingStore, err = NewGoogleDriveStore(dsn, fileId, credentialsPath)
 	} else {

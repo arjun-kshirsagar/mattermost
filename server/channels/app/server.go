@@ -579,69 +579,57 @@ func (s *Server) Channels() *Channels {
 }
 
 func (s *Server) startInterClusterServices(license *model.License) error {
-	if license == nil {
-		mlog.Debug("No license provided; Remote Cluster services disabled")
-		return nil
-	}
+    if license == nil {
+        mlog.Debug("No License provided, bypassing license check")
+    } else if !license.HasRemoteClusterService() && !license.HasSharedChannels() {
+        mlog.Debug("License does not have remote cluster or shared channel features, bypassing license check")
+        return nil
+    }
 
-	// Remote Cluster service
+	mlog.Debug("EnableRemoteClusterService value", mlog.Bool("value", *s.platform.Config().ConnectedWorkspacesSettings.EnableRemoteClusterService))
+mlog.Debug("EnableSharedChannels value", mlog.Bool("value", *s.platform.Config().ConnectedWorkspacesSettings.EnableSharedChannels))
+    // Corrected logic: Ensure the services are enabled in the config
+    if !*s.platform.Config().ConnectedWorkspacesSettings.EnableRemoteClusterService {
+        mlog.Debug("Remote Cluster Service disabled via config")
+        return nil
+    }
 
-	// License check (assume enabled if shared channels enabled)
-	if !license.HasRemoteClusterService() && !license.HasSharedChannels() {
-		mlog.Debug("License does not have Remote Cluster services enabled")
-		return nil
-	}
+    var err error
+    appInstance := New(ServerConnector(s.Channels()))
+    rcs, err := remotecluster.NewRemoteClusterService(s, appInstance)
+    if err != nil {
+        return err
+    }
 
-	// Config check
-	if !*s.platform.Config().ConnectedWorkspacesSettings.EnableRemoteClusterService && !*s.platform.Config().ConnectedWorkspacesSettings.EnableSharedChannels {
-		mlog.Debug("Remote Cluster Service disabled via config")
-		return nil
-	}
+    if err = rcs.Start(); err != nil {
+        return err
+    }
 
-	var err error
-	appInstance := New(ServerConnector(s.Channels()))
-	rcs, err := remotecluster.NewRemoteClusterService(s, appInstance)
-	if err != nil {
-		return err
-	}
+    s.serviceMux.Lock()
+    s.remoteClusterService = rcs
+    s.serviceMux.Unlock()
 
-	if err = rcs.Start(); err != nil {
-		return err
-	}
+    // Shared Channels service (depends on remote cluster service)
+    if !*s.platform.Config().ConnectedWorkspacesSettings.EnableSharedChannels {
+        mlog.Debug("Shared Channels Service disabled via config")
+        return nil
+    }
 
-	s.serviceMux.Lock()
-	s.remoteClusterService = rcs
-	s.serviceMux.Unlock()
+    scs, err := sharedchannel.NewSharedChannelService(s, s.Platform(), appInstance)
+    if err != nil {
+        return err
+    }
+    s.platform.SetSharedChannelService(scs)
 
-	// Shared Channels service (depends on remote cluster service)
+    if err = scs.Start(); err != nil {
+        return err
+    }
 
-	// License check
-	if !license.HasSharedChannels() {
-		mlog.Debug("License does not have shared channels enabled")
-		return nil
-	}
+    s.serviceMux.Lock()
+    s.sharedChannelService = scs
+    s.serviceMux.Unlock()
 
-	// Config check
-	if !*s.platform.Config().ConnectedWorkspacesSettings.EnableSharedChannels {
-		mlog.Debug("Shared Channels Service disabled via config")
-		return nil
-	}
-
-	scs, err := sharedchannel.NewSharedChannelService(s, s.Platform(), appInstance)
-	if err != nil {
-		return err
-	}
-	s.platform.SetSharedChannelService(scs)
-
-	if err = scs.Start(); err != nil {
-		return err
-	}
-
-	s.serviceMux.Lock()
-	s.sharedChannelService = scs
-	s.serviceMux.Unlock()
-
-	return nil
+    return nil
 }
 
 const TimeToWaitForConnectionsToCloseOnServerShutdown = time.Second
@@ -1316,10 +1304,6 @@ func doConfigCleanup(s *Server) {
 	if err := s.platform.CleanUpConfig(); err != nil {
 		mlog.Warn("Error while cleaning up configurations", mlog.Err(err))
 	}
-}
-
-func (s *Server) HandleMetrics(route string, h http.Handler) {
-	s.platform.HandleMetrics(route, h)
 }
 
 func (s *Server) sendLicenseUpForRenewalEmail(users map[string]*model.User, license *model.License) *model.AppError {
