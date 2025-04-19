@@ -29,29 +29,31 @@ const (
 )
 
 type redisCluster struct {
-    ps            *PlatformService
-    nodeID        string
-    rdb           *redis.Client
-    pubsub        *redis.PubSub
-    handlers      map[model.ClusterEvent][]einterfaces.ClusterMessageHandler
-    handlersMutex sync.RWMutex
-    isLeader      bool
-    leaderMutex   sync.RWMutex
-    stopChan      chan struct{}
-    wg            sync.WaitGroup
-    logger        *mlog.Logger
-    isReady       atomic.Bool
-    messageBuffer []model.ClusterMessage  // Optional: buffer messages
+    ps             *PlatformService
+    nodeID         string
+    rdb            *redis.Client
+    pubsub         *redis.PubSub
+    handlers       map[model.ClusterEvent][]einterfaces.ClusterMessageHandler
+    handlersMutex  sync.RWMutex
+    isLeader       bool
+    leaderMutex    sync.RWMutex
+    stopChan       chan struct{}
+    wg             sync.WaitGroup
+    logger         *mlog.Logger
+    isReady        atomic.Bool
+    messageBuffer  []model.ClusterMessage  // Optional: buffer messages
+    broadcastHooks map[string]BroadcastHook
 }
 
-func NewRedisCluster(ps *PlatformService) *redisCluster {
+func NewRedisCluster(ps *PlatformService, hooks map[string]BroadcastHook) *redisCluster {
     nodeID := model.NewId()
     rc := &redisCluster{
-        ps:       ps,
-        nodeID:   nodeID,
-        handlers: make(map[model.ClusterEvent][]einterfaces.ClusterMessageHandler),
-        stopChan: make(chan struct{}),
-        logger:   ps.logger.With(mlog.String("cluster_node_id", nodeID)),
+        ps:             ps,
+        nodeID:         nodeID,
+        handlers:       make(map[model.ClusterEvent][]einterfaces.ClusterMessageHandler),
+        stopChan:       make(chan struct{}),
+        logger:         ps.logger.With(mlog.String("cluster_node_id", nodeID)),
+        broadcastHooks: hooks,
     }
 
     cfg := ps.Config().CacheSettings
@@ -60,6 +62,13 @@ func NewRedisCluster(ps *PlatformService) *redisCluster {
         Password: *cfg.RedisPassword,
         DB:       int(*cfg.RedisDB),
     })
+
+    // Register the platform's cluster handlers
+    rc.RegisterClusterMessageHandler(model.ClusterEventPublish, ps.ClusterPublishHandler)
+    rc.RegisterClusterMessageHandler(model.ClusterEventUpdateStatus, ps.ClusterUpdateStatusHandler)
+    rc.RegisterClusterMessageHandler(model.ClusterEventInvalidateAllCaches, ps.ClusterInvalidateAllCachesHandler)
+    rc.RegisterClusterMessageHandler(model.ClusterEventInvalidateWebConnCacheForUser, ps.clusterInvalidateWebConnSessionCacheForUserHandler)
+    rc.RegisterClusterMessageHandler(model.ClusterEventBusyStateChanged, ps.clusterBusyStateChgHandler)
 
     return rc
 }
@@ -72,6 +81,10 @@ func (rc *redisCluster) Start() error {
         return fmt.Errorf("failed to connect to Redis: %w", err)
     }
 
+    rc.logger.Info("Redis cluster connection established",
+        mlog.String("node_id", rc.nodeID),
+        mlog.String("redis_addr", rc.rdb.Options().Addr))
+
     // Subscribe to cluster events
     rc.pubsub = rc.rdb.Subscribe(ctx, redisPubSubChannel, redisEventChannel)
     
@@ -81,7 +94,6 @@ func (rc *redisCluster) Start() error {
     go rc.heartbeatLoop()
     go rc.messageListener()
 
-    rc.logger.Info("Redis cluster started", mlog.String("node_id", rc.nodeID))
     return nil
 }
 
@@ -205,32 +217,20 @@ func (rc *redisCluster) handleClusterMessage(payload string) {
 
     rc.logger.Debug("Received cluster message",
         mlog.String("event", string(msg.Event)),
-        mlog.Bool("has_handler", rc.hasHandler(msg.Event)))
+        mlog.String("node_id", rc.nodeID))
 
-    if !rc.isReady.Load() {
-        // Either buffer the message or log and return
-        return
-    }
-
-    // Handle WebSocket events
-    if msg.Event == model.ClusterEventPublish {
-        var wsMsg model.WebSocketEvent
-        if err := json.Unmarshal(msg.Data, &wsMsg); err != nil {
-            rc.logger.Error("Failed to unmarshal WebSocket event", mlog.Err(err))
-            return
-        }
-        rc.ps.PublishSkipClusterSend(&wsMsg)
-        return
-    }
-
+    // Get handlers for this event
     rc.handlersMutex.RLock()
     handlers, ok := rc.handlers[msg.Event]
     rc.handlersMutex.RUnlock()
 
     if !ok {
+        rc.logger.Debug("No handlers for cluster event",
+            mlog.String("event", string(msg.Event)))
         return
     }
 
+    // Execute all handlers for this event
     for _, handler := range handlers {
         handler(&msg)
     }
@@ -342,7 +342,20 @@ func (rc *redisCluster) SendClusterMessage(msg *model.ClusterMessage) {
         channel = redisEventChannel
     }
 
-    if err := rc.rdb.Publish(context.Background(), channel, string(data)).Err(); err != nil {
+    ctx := context.Background()
+    if msg.SendType == model.ClusterSendReliable {
+        // For reliable sending, use Redis RPUSH to a list
+        key := fmt.Sprintf("%s:reliable:%s", redisPubSubChannel, msg.Event)
+        if err := rc.rdb.RPush(ctx, key, string(data)).Err(); err != nil {
+            rc.logger.Error("Failed to push reliable cluster message", mlog.Err(err))
+            return
+        }
+        // Set TTL on the list
+        rc.rdb.Expire(ctx, key, 24*time.Hour)
+    }
+
+    // Always publish to ensure immediate delivery
+    if err := rc.rdb.Publish(ctx, channel, string(data)).Err(); err != nil {
         rc.logger.Error("Failed to publish cluster message", mlog.Err(err))
     }
 }
@@ -443,4 +456,111 @@ func (rc *redisCluster) HealthScore() int {
 
 func (rc *redisCluster) SetReady() {
     rc.isReady.Store(true)
+}
+
+// Add method to handle direct WebSocket broadcasts
+func (rc *redisCluster) BroadcastWebSocketEvent(event *model.WebSocketEvent) {
+    // Skip if the event is already from another cluster node
+    if event.IsFromCluster() {
+        return
+    }
+
+    // Mark the event as coming from cluster
+    event.SetFromCluster(true)
+
+    // Convert WebSocketEvent to JSON bytes
+    data, err := event.ToJSON()
+    if err != nil {
+        rc.logger.Error("Failed to marshal WebSocket event", mlog.Err(err))
+        return
+    }
+
+    // Create cluster message
+    msg := &model.ClusterMessage{
+        Event:    model.ClusterEventPublish,
+        Data:     data,
+        SendType: model.ClusterSendBestEffort,
+    }
+
+    // Use reliable sending for certain event types
+    if event.EventType() == model.WebsocketEventPosted ||
+        event.EventType() == model.WebsocketEventPostEdited ||
+        event.EventType() == model.WebsocketEventDirectAdded ||
+        event.EventType() == model.WebsocketEventGroupAdded ||
+        event.EventType() == model.WebsocketEventAddedToTeam ||
+        event.GetBroadcast().ReliableClusterSend {
+        msg.SendType = model.ClusterSendReliable
+    }
+
+    // Send to other nodes via Redis
+    rc.SendClusterMessage(msg)
+}
+
+// Update the WebSocket event broadcasting
+func (rc *redisCluster) Publish(event *model.WebSocketEvent) {
+    // Skip if the event is already from another cluster node
+    if event.IsFromCluster() {
+        return
+    }
+
+    // Mark the event as coming from cluster
+    event.SetFromCluster(true)
+
+    // Set the node ID in the broadcast
+    if event.GetBroadcast() != nil {
+        event.GetBroadcast().ConnectionId = rc.nodeID
+    }
+
+    // Local broadcast first
+    rc.ps.PublishSkipClusterSend(event)
+
+    // Prepare cluster message
+    data, err := event.ToJSON()  // Handle both return values
+    if err != nil {
+        rc.logger.Error("Failed to marshal WebSocket event", mlog.Err(err))
+        return
+    }
+
+    msg := &model.ClusterMessage{
+        Event: model.ClusterEventPublish,
+        Data:  data,
+    }
+
+    // Send to other nodes via Redis
+    rc.SendClusterMessage(msg)
+}
+
+func (rc *redisCluster) processReliableMessages() {
+    defer rc.wg.Done()
+    ticker := time.NewTicker(1 * time.Second)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-rc.stopChan:
+            return
+        case <-ticker.C:
+            ctx := context.Background()
+            // Process reliable messages
+            pattern := fmt.Sprintf("%s:reliable:*", redisPubSubChannel)
+            keys, err := rc.rdb.Keys(ctx, pattern).Result()
+            if err != nil {
+                rc.logger.Error("Failed to get reliable message keys", mlog.Err(err))
+                continue
+            }
+
+            for _, key := range keys {
+                // Get all messages in the list
+                messages, err := rc.rdb.LRange(ctx, key, 0, -1).Result()
+                if err != nil {
+                    rc.logger.Error("Failed to get reliable messages", mlog.String("key", key), mlog.Err(err))
+                    continue
+                }
+
+                for _, msg := range messages {
+                    rc.handleClusterMessage(msg)
+                }
+            }
+        }
+    }
 }
