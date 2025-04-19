@@ -1,14 +1,15 @@
-//go:build oss_cluster
-// +build oss_cluster
-
 package platform
 
-import "github.com/mattermost/mattermost/server/v8/einterfaces"
+import (
+    "github.com/mattermost/mattermost/server/v8/einterfaces"
+)
 
-// The platform looks for `clusterInterface` during bootstrap.
-// We inject our Redis implementation.
-func init() {
-	clusterInterface = func(ps *PlatformService) einterfaces.ClusterInterface {
-		return NewRedisCluster(ps)
-	}
+// initRedisCluster initializes the Redis-based cluster implementation
+func initRedisCluster(ps *PlatformService) einterfaces.ClusterInterface {
+    if ps.Config().ClusterSettings.Enable != nil && *ps.Config().ClusterSettings.Enable {
+        if *ps.Config().CacheSettings.CacheType == "redis" {
+            return NewRedisCluster(ps)
+        }
+    }
+    return nil
 }

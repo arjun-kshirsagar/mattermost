@@ -844,6 +844,9 @@ func (s *Server) Start() error {
 	if err := s.Channels().Start(); err != nil {
 		return errors.Wrap(err, "Unable to start channels")
 	}
+	if *s.platform.Config().ClusterSettings.Enable && s.platform.Cluster() != nil {
+		        s.joinCluster = true
+			}
 
 	if s.joinCluster && s.platform.Cluster() != nil {
 		s.registerClusterHandlers()
