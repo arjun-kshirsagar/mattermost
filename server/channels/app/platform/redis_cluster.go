@@ -8,6 +8,7 @@ import (
     "fmt"
     "sync"
     "time"
+    "sync/atomic"
 
     "github.com/redis/go-redis/v9"
     
@@ -39,6 +40,8 @@ type redisCluster struct {
     stopChan      chan struct{}
     wg            sync.WaitGroup
     logger        *mlog.Logger
+    isReady       atomic.Bool
+    messageBuffer []model.ClusterMessage  // Optional: buffer messages
 }
 
 func NewRedisCluster(ps *PlatformService) *redisCluster {
@@ -200,6 +203,15 @@ func (rc *redisCluster) handleClusterMessage(payload string) {
         return
     }
 
+    rc.logger.Debug("Received cluster message",
+        mlog.String("event", string(msg.Event)),
+        mlog.Bool("has_handler", rc.hasHandler(msg.Event)))
+
+    if !rc.isReady.Load() {
+        // Either buffer the message or log and return
+        return
+    }
+
     // Handle WebSocket events
     if msg.Event == model.ClusterEventPublish {
         var wsMsg model.WebSocketEvent
@@ -250,6 +262,13 @@ func (rc *redisCluster) handleEventMessage(payload string) {
     for _, handler := range handlers {
         handler(msg)
     }
+}
+
+func (rc *redisCluster) hasHandler(event model.ClusterEvent) bool {
+    rc.handlersMutex.RLock()
+    defer rc.handlersMutex.RUnlock()
+    _, ok := rc.handlers[event]
+    return ok
 }
 
 // ClusterInterface implementation
@@ -420,4 +439,8 @@ func (rc *redisCluster) NotifyMsg(buf []byte) {
 func (rc *redisCluster) HealthScore() int {
     // Return 0 for "totally healthy"
     return 0
+}
+
+func (rc *redisCluster) SetReady() {
+    rc.isReady.Store(true)
 }
