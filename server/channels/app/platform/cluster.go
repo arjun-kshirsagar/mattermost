@@ -176,29 +176,12 @@ func (ps *PlatformService) Publish(message *model.WebSocketEvent) {
 		ps.metricsIFace.IncrementWebsocketEvent(message.EventType())
 	}
 
-	ps.PublishSkipClusterSend(message)
-
 	if ps.clusterIFace != nil {
-		data, err := message.ToJSON()
-		if err != nil {
-			mlog.Warn("Failed to encode message to JSON", mlog.Err(err))
-		}
-		cm := &model.ClusterMessage{
-			Event:    model.ClusterEventPublish,
-			SendType: model.ClusterSendBestEffort,
-			Data:     data,
-		}
-
-		if message.EventType() == model.WebsocketEventPosted ||
-			message.EventType() == model.WebsocketEventPostEdited ||
-			message.EventType() == model.WebsocketEventDirectAdded ||
-			message.EventType() == model.WebsocketEventGroupAdded ||
-			message.EventType() == model.WebsocketEventAddedToTeam ||
-			message.GetBroadcast().ReliableClusterSend {
-			cm.SendType = model.ClusterSendReliable
-		}
-
-		ps.clusterIFace.SendClusterMessage(cm)
+		// Use Redis cluster interface for distribution
+		ps.clusterIFace.(*redisCluster).Publish(message)
+	} else {
+		// No clustering, just broadcast locally
+		ps.PublishSkipClusterSend(message)
 	}
 }
 
