@@ -89,8 +89,8 @@ The solution focuses on **decoupling** critical stateful components, adding **di
 | WebSocket messages were not visible across different nodes. | Built a Redis Pub/Sub-based cluster message bus to broadcast WebSocket payloads to all app nodes. |
 | Session invalidation was not cluster-aware. | Leveraged Redis-based session store or ensured stateless token-based session authentication. |
 | Database writes under heavy load could bottleneck. | Planned for read replicas and database connection pooling (PgBouncer) to distribute load. |
-| File upload consistency across servers. | Adopted shared file storage like NFS or MinIO (S3 API) so all servers have the same file view. |
-| Deployment and operational complexity. | Added detailed documentation and scripts for setting up Redis clusters, DB replication, and load balancer configs. |
+| Port-binding confusion** (`expose` vs. `ports`).| Added explicit `ports:` mappings for followers (8066, 8067) so they bind on host. |
+| No native clustering in Team Edition. | Researched community forks; adopted Redis Pub/Sub pattern to emulate enterprise HA. |
 
 ---
 
@@ -140,4 +140,3 @@ The solution focuses on **decoupling** critical stateful components, adding **di
 - **Zero-downtime deployments** using blue-green strategies.
 
 ---
-

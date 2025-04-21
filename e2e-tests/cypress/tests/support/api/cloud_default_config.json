@@ -354,7 +354,7 @@
         "IosAppDownloadLink": "https://mattermost.com/pl/ios-app/"
     },
     "ClusterSettings": {
-        "Enable": false
+        "Enable": true
     },
     "ExperimentalSettings": {
         "RestrictSystemAdmin": true

@@ -40,7 +40,7 @@ services:
   mysql-read-replica:
     container_name: mattermost-mysql-read-replica
     ports:
-      - "3307:3306"
+      - "3310:3306"
     extends:
       file: build/docker-compose.common.yml
       service: mysql-read-replica
@@ -97,13 +97,29 @@ services:
       file: build/docker-compose.common.yml
       service: opensearch
 
-  redis:
-    container_name: mattermost-redis
+  redis-node-1:
+    image: redis:7
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
-    extends:
-      file: build/docker-compose.common.yml
-      service: redis
+      - "7001:6379"
+    networks:
+      - mm-test
+
+  redis-node-2:
+    image: redis:7
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--appendonly", "yes"]
+    ports:
+      - "7002:6379"
+    networks:
+      - mm-test
+
+  redis-node-3:
+    image: redis:7
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--appendonly", "yes"]
+    ports:
+      - "7003:6379"
+    networks:
+      - mm-test
 
   dejavu:
     container_name: mattermost-dejavu
@@ -115,6 +131,7 @@ services:
 
   keycloak:
     container_name: mattermost-saml
+
     ports:
       - "8484:8080"
     extends:
