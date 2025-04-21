@@ -1338,6 +1338,12 @@ type ReplicaLagSettings struct {
 	QueryTimeLag     *string `access:"environment,write_restrictable,cloud_restrictable"` // telemetry: none
 }
 
+type DatabaseConfig struct {
+    Name       string `json:"name"`
+    DriverName string `json:"driver_name"`
+    DataSource string `json:"data_source"`
+}
+
 type SqlSettings struct {
 	DriverName                        *string               `access:"environment_database,write_restrictable,cloud_restrictable"`
 	DataSource                        *string               `access:"environment_database,write_restrictable,cloud_restrictable"` // telemetry: none
@@ -1354,6 +1360,7 @@ type SqlSettings struct {
 	MigrationsStatementTimeoutSeconds *int                  `access:"environment_database,write_restrictable,cloud_restrictable"`
 	ReplicaLagSettings                []*ReplicaLagSettings `access:"environment_database,write_restrictable,cloud_restrictable"` // telemetry: none
 	ReplicaMonitorIntervalSeconds     *int                  `access:"environment_database,write_restrictable,cloud_restrictable"`
+	Databases []DatabaseConfig `json:"databases"` // <-- Add this line
 }
 
 func (s *SqlSettings) SetDefaults(isUpdate bool) {

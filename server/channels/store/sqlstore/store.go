@@ -31,8 +31,8 @@ import (
 	"github.com/mattermost/mattermost/server/v8/channels/db"
 	"github.com/mattermost/mattermost/server/v8/channels/store"
 	"github.com/mattermost/mattermost/server/v8/einterfaces"
+	"encoding/json"
 )
-
 type migrationDirection string
 
 type Option func(s *SqlStore) error
@@ -1387,4 +1387,101 @@ func (ss *SqlStore) determineMaxColumnSize(tableName, columnName string) (int, e
 
 func (ss *SqlStore) ScheduledPost() store.ScheduledPostStore {
 	return ss.stores.scheduledPost
+}
+
+// DBStatusPayload is used for cluster messages about DB health
+type DBStatusPayload struct {
+	DBName string
+	Status string // "up" or "down"
+}
+
+// MultiDBStore manages multiple DB connections and routes queries
+type MultiDBStore struct {
+	dbs      map[string]*sql.DB
+	hashRing *HashRing
+	mu       sync.RWMutex
+	cluster  einterfaces.ClusterInterface
+}
+
+// NewMultiDBStore initializes all DBs and sets up cluster handlers
+func NewMultiDBStore(cfg *model.Config, cluster einterfaces.ClusterInterface) (*MultiDBStore, error) {
+	dbs := make(map[string]*sql.DB)
+	var nodeNames []string
+
+	for _, dbCfg := range cfg.SqlSettings.Databases {
+		db, err := sql.Open(dbCfg.DriverName, dbCfg.DataSource)
+		if err != nil {
+			return nil, fmt.Errorf("error opening DB %s: %w", dbCfg.Name, err)
+		}
+		dbs[dbCfg.Name] = db
+		nodeNames = append(nodeNames, dbCfg.Name)
+	}
+
+	store := &MultiDBStore{
+		dbs:      dbs,
+		hashRing: NewHashRing(nodeNames),
+		cluster:  cluster,
+	}
+
+	// Register cluster message handler for DB health
+	cluster.RegisterClusterMessageHandler(model.ClusterEvent("DBStatusChange"), store.handleClusterDBStatusChange)
+
+	// Start health checker
+	go store.monitorDBs()
+
+	return store, nil
+}
+
+// getDBForKey selects a DB based on consistent hashing
+func (s *MultiDBStore) getDBForKey(key string) *sql.DB {
+	dbName := s.hashRing.Get(key)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dbs[dbName]
+}
+
+// monitorDBs pings DBs and notifies cluster on failure
+func (s *MultiDBStore) monitorDBs() {
+	for {
+		s.mu.RLock()
+		for name, db := range s.dbs {
+			if err := db.Ping(); err != nil {
+				payload := DBStatusPayload{DBName: name, Status: "down"}
+				data, _ := json.Marshal(payload)
+				s.cluster.SendClusterMessage(&model.ClusterMessage{
+					Event: model.ClusterEvent("DBStatusChange"),
+					Data:  data,
+				})
+			}
+		}
+		s.mu.RUnlock()
+		time.Sleep(30 * time.Second)
+	}
+}
+
+// handleClusterDBStatusChange updates local state on DB health changes
+func (s *MultiDBStore) handleClusterDBStatusChange(msg *model.ClusterMessage) {
+	var payload DBStatusPayload
+	if err := json.Unmarshal([]byte(msg.Data), &payload); err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if payload.Status == "down" {
+		delete(s.dbs, payload.DBName)
+		// Optionally, update hashRing to skip this DB
+	}
+	// If "up", you can re-add or mark as healthy
+}
+
+// Example usage: get a user by ID
+func (s *MultiDBStore) GetUserByID(userID string) (*model.User, error) {
+	db := s.getDBForKey(userID)
+	// Use db to perform the query (example)
+	row := db.QueryRow("SELECT id, username FROM Users WHERE id = $1", userID)
+	var user model.User
+	if err := row.Scan(&user.Id, &user.Username); err != nil {
+		return nil, err
+	}
+	return &user, nil
 }
